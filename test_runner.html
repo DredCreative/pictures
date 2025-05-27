@@ -1,0 +1,1054 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>JavaScript Test Runner</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        h1 { text-align: center; }
+        .summary { margin-bottom: 20px; padding: 10px; background-color: #f0f0f0; border: 1px solid #ddd; }
+        .summary p { margin: 5px 0; }
+        #resultsList { list-style-type: none; padding: 0; }
+        #resultsList li {
+            padding: 8px;
+            margin-bottom: 5px;
+            border-radius: 4px;
+            border: 1px solid #ddd;
+        }
+        .pass { background-color: #d4edda; color: #155724; border-left: 5px solid #28a745; }
+        .fail { background-color: #f8d7da; color: #721c24; border-left: 5px solid #dc3545; }
+        .fail pre {
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            background-color: #f1f1f1;
+            padding: 10px;
+            border-radius: 4px;
+            border: 1px solid #ccc;
+            margin-top: 8px;
+            font-size: 0.9em;
+            color: #333;
+        }
+    </style>
+</head>
+<body>
+    <h1>JavaScript Test Results</h1>
+
+    <div class="summary">
+        <p>Total Tests: <span id="totalTests">0</span></p>
+        <p>Passed: <span id="testsPassed">0</span></p>
+        <p>Failed: <span id="testsFailed">0</span></p>
+    </div>
+
+    <ol id="resultsList"></ol>
+
+    <!-- Copied JavaScript from index.html -->
+    <script>
+        // Конфигурация GitHub
+        const githubConfig = {
+            // Эти значения должны быть заполнены пользователем
+            owner: '', // Имя пользователя GitHub
+            repo: '', // Название репозитория
+            branch: 'main', // Ветка по умолчанию
+            token: '', // Персональный токен доступа GitHub
+            imagesPath: 'images/' // Путь к папке с изображениями в репозитории
+        };
+
+        let uploadedImages = new Map();
+        let processedContent = '';
+        let imageUrlMap = new Map(); // Маппинг локальных изображений на публичные URL
+        
+        let currentArticleIdForManagement = null; // Store article ID for management modal
+
+
+        // Симуляция CDN URL для изображений (в реальной реализации это должен быть настоящий CDN)
+        function generatePublicImageUrl(filename, dataUrl) {
+            // Генерируем уникальный ID для изображения
+            const imageId = 'img_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+
+            // В реальной реализации здесь должен быть запрос к вашему CDN/серверу
+            // Для демонстрации используем imgbb.com API или подобный сервис
+
+            // Временно используем data URL, но с маркером для последующей замены
+            const publicUrl = `https://cdn.publikator.demo/${imageId}/${filename}`;
+
+            // Сохраняем маппинг для дальнейшего использования
+            imageUrlMap.set(filename, {
+                publicUrl: publicUrl,
+                dataUrl: dataUrl,
+                filename: filename
+            });
+
+            return publicUrl;
+        }
+
+        // Преобразование data URL в blob URL для лучшей совместимости
+        function dataUrlToBlobUrl(dataUrl) {
+            const arr = dataUrl.split(',');
+            const mime = arr[0].match(/:(.*?);/)[1];
+            const bstr = atob(arr[1]);
+            let n = bstr.length;
+            const u8arr = new Uint8Array(n);
+            while(n--) {
+                u8arr[n] = bstr.charCodeAt(n);
+            }
+            const blob = new Blob([u8arr], {type: mime});
+            return URL.createObjectURL(blob);
+        }
+
+        // Обработка загрузки текстового файла
+        if (document.getElementById('textFile')) { // Check if element exists before adding listener
+            document.getElementById('textFile').addEventListener('change', function(e) {
+                const file = e.target.files[0];
+                if (file) {
+                    const reader = new FileReader();
+                    reader.onload = function(e) {
+                        document.getElementById('textEditor').value = e.target.result;
+                    };
+                    reader.readAsText(file, 'utf-8');
+                }
+            });
+        }
+        
+        // Обработка загрузки изображений
+        if (document.getElementById('imageFiles')) {
+            document.getElementById('imageFiles').addEventListener('change', function(e) {
+                const files = Array.from(e.target.files);
+                // const imagesList = document.getElementById('imagesList'); // Not needed here for logic
+
+                files.forEach(file => {
+                    const reader = new FileReader();
+                    reader.onload = function(e) {
+                        uploadedImages.set(file.name, e.target.result);
+                        // Генерируем публичный URL для изображения
+                        generatePublicImageUrl(file.name, e.target.result);
+                        if (typeof updateImagesList === "function") updateImagesList(); // Call if exists
+                    };
+                    reader.readAsDataURL(file);
+                });
+            });
+        }
+
+        function updateImagesList() {
+            const imagesList = document.getElementById('imagesList');
+            if (!imagesList) return; // Guard if not in testing DOM
+            imagesList.innerHTML = '';
+
+            if (uploadedImages.size > 0) {
+                const title = document.createElement('div');
+                title.innerHTML = '<strong>Загруженные изображения:</strong>';
+                imagesList.appendChild(title);
+
+                uploadedImages.forEach((dataUrl, filename) => {
+                    const item = document.createElement('div');
+                    item.className = 'image-item';
+                    item.innerHTML = `
+                        <img src="${dataUrl}" alt="${filename}" />
+                        <span>${filename}</span>
+                    `;
+                    imagesList.appendChild(item);
+                });
+            }
+        }
+
+        function generatePreview() {
+            const textEditor = document.getElementById('textEditor');
+            const previewContent = document.getElementById('previewContent');
+            if (!textEditor || !previewContent) return; // Guard
+
+            const text = textEditor.value;
+            
+            if (!text.trim()) {
+                previewContent.innerHTML = '<p style="color: #999;">Пожалуйста, введите текст</p>';
+                return;
+            }
+
+            let processedText = text;
+
+            // Обработка загруженных изображений [IMG:]
+            const imageRegex = /\[IMG:([^\]]+)\]\s*([^\\n]*)/g;
+            processedText = processedText.replace(imageRegex, (match, filename, caption) => {
+                const imageData = uploadedImages.get(filename);
+                if (imageData) {
+                    const captionHtml = caption ? `<figcaption>${caption.trim()}</figcaption>` : '';
+                    return `<figure><img src="${imageData}" alt="${caption}" />${captionHtml}</figure>`;
+                } else {
+                    return `<div style="background: #ffebee; color: #c62828; padding: 10px; border-radius: 5px; margin: 10px 0;">⚠️ Изображение "${filename}" не найдено</div>`;
+                }
+            });
+
+            // Обработка онлайн изображений [URL:]
+            const urlRegex = /\[URL:([^\]]+)\]\s*([^\\n]*)/g;
+            processedText = processedText.replace(urlRegex, (match, imageUrl, caption) => {
+                const captionHtml = caption ? `<figcaption>${caption.trim()}</figcaption>` : '';
+                const errorDiv = `<div style="display: none; background: #ffebee; color: #c62828; padding: 10px; border-radius: 5px; margin: 10px 0;">⚠️ Не удалось загрузить изображение: ${imageUrl}</div>`;
+                return `<figure><img src="${imageUrl}" alt="${caption}" onload="this.style.opacity='1'" onerror="this.style.display='none'; this.nextElementSibling.style.display='block'" style="opacity: 0.5; transition: opacity 0.3s;" />${errorDiv}${captionHtml}</figure>`;
+            });
+
+            // Обработка абзацев
+            processedText = processedText.split('\\n\\n').map(paragraph => {
+                if (paragraph.trim() && !paragraph.includes('<figure') && !paragraph.includes('<div')) { 
+                    return `<p>${paragraph.trim().replace(/\\n/g, '<br>')}</p>`;
+                }
+                return paragraph; 
+            }).join(''); 
+
+            previewContent.innerHTML = processedText;
+            processedContent = processedText; 
+        }
+
+        // Функция для настройки GitHub
+        function setupGitHub() {
+            const modal = document.createElement('div');
+            modal.style.position = 'fixed';
+            modal.style.top = '0';
+            modal.style.left = '0';
+            modal.style.width = '100%';
+            modal.style.height = '100%';
+            modal.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
+            modal.style.display = 'flex';
+            modal.style.alignItems = 'center';
+            modal.style.justifyContent = 'center';
+            modal.style.zIndex = '9999';
+
+            const modalContent = document.createElement('div');
+            modalContent.style.backgroundColor = 'white';
+            modalContent.style.padding = '30px';
+            modalContent.style.borderRadius = '10px';
+            modalContent.style.width = '500px';
+            modalContent.style.maxWidth = '90%';
+            modalContent.style.maxHeight = '90%';
+            modalContent.style.overflowY = 'auto';
+
+            modalContent.innerHTML = \`
+                <h2 style="margin-top: 0; color: #4facfe;">Настройка интеграции с GitHub</h2>
+                <p>Для загрузки и управления изображениями через GitHub, пожалуйста, заполните следующие поля:</p>
+                <div style="margin-bottom: 15px;">
+                    <label style="display: block; margin-bottom: 5px; font-weight: bold;">Имя пользователя GitHub:</label>
+                    <input type="text" id="github-owner" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;" 
+                        value="\${githubConfig.owner}" placeholder="например, username">
+                </div>
+                <div style="margin-bottom: 15px;">
+                    <label style="display: block; margin-bottom: 5px; font-weight: bold;">Название репозитория:</label>
+                    <input type="text" id="github-repo" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;" 
+                        value="\${githubConfig.repo}" placeholder="например, my-blog-images">
+                </div>
+                <div style="margin-bottom: 15px;">
+                    <label style="display: block; margin-bottom: 5px; font-weight: bold;">Ветка:</label>
+                    <input type="text" id="github-branch" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;" 
+                        value="\${githubConfig.branch}" placeholder="main">
+                </div>
+                <div style="margin-bottom: 15px;">
+                    <label style="display: block; margin-bottom: 5px; font-weight: bold;">Персональный токен доступа:</label>
+                    <input type="password" id="github-token" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;" 
+                        value="\${githubConfig.token}" placeholder="ghp_xxxxxxxxxxxx">
+                    <p style="font-size: 0.8em; color: #666; margin-top: 5px;">
+                        <a href="https://github.com/settings/tokens" target="_blank" style="color: #4facfe;">Создать токен</a> 
+                        с правами доступа к репозиторию (repo).
+                    </p>
+                </div>
+                <div style="margin-bottom: 15px;">
+                    <label style="display: block; margin-bottom: 5px; font-weight: bold;">Путь к папке с изображениями:</label>
+                    <input type="text" id="github-images-path" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;" 
+                        value="\${githubConfig.imagesPath}" placeholder="e.g., images/articles/">
+                    <p style="font-size: 0.8em; color: #666; margin-top: 5px;">
+                        Укажите путь к папке в репозитории (e.g., images/ или my-docs/assets/). <strong>Важно: путь должен заканчиваться на /</strong>
+                    </p>
+                </div>
+                <div style="display: flex; justify-content: flex-end; margin-top: 20px;">
+                    <button id="github-cancel" style="padding: 10px 15px; margin-right: 10px; border: none; border-radius: 5px; 
+                        background-color: #f1f1f1; cursor: pointer;">Отмена</button>
+                    <button id="github-save" style="padding: 10px 15px; border: none; border-radius: 5px; 
+                        background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); color: white; cursor: pointer;">Сохранить</button>
+                </div>
+            \`;
+
+            modal.appendChild(modalContent);
+            document.body.appendChild(modal);
+
+            document.getElementById('github-cancel').addEventListener('click', () => {
+                document.body.removeChild(modal);
+            });
+
+            document.getElementById('github-save').addEventListener('click', () => {
+                githubConfig.owner = document.getElementById('github-owner').value.trim();
+                githubConfig.repo = document.getElementById('github-repo').value.trim();
+                githubConfig.branch = document.getElementById('github-branch').value.trim() || 'main';
+                githubConfig.token = document.getElementById('github-token').value.trim();
+                githubConfig.imagesPath = document.getElementById('github-images-path').value.trim();
+
+                if (githubConfig.imagesPath && githubConfig.imagesPath !== '/' && !githubConfig.imagesPath.endsWith('/')) {
+                    githubConfig.imagesPath += '/';
+                }
+                if (githubConfig.imagesPath === '/') { 
+                    githubConfig.imagesPath = 'images/'; 
+                    if (typeof showNotification === "function") showNotification('Путь к изображениям не может быть корневым. Установлен путь по умолчанию: images/', 'error');
+                }
+
+                localStorage.setItem('githubConfig', JSON.stringify({
+                    owner: githubConfig.owner,
+                    repo: githubConfig.repo,
+                    branch: githubConfig.branch,
+                    imagesPath: githubConfig.imagesPath
+                }));
+
+                document.body.removeChild(modal);
+                if (typeof showNotification === "function") showNotification('Настройки GitHub сохранены! Проверка конфигурации...', 'info');
+                if (typeof validateGitHubConfig === "function") validateGitHubConfig(); 
+            });
+        }
+        
+        async function validateGitHubConfig(showSuccessNotification = true) { 
+            const manageImagesBtnContainer = document.getElementById('manageGitHubImagesBtnContainer');
+
+            if (!githubConfig.owner || !githubConfig.repo) {
+                if (showSuccessNotification && typeof showNotification === "function") showNotification('Имя пользователя и репозиторий GitHub должны быть указаны для валидации.', 'error');
+                if (manageImagesBtnContainer) manageImagesBtnContainer.style.display = 'none';
+                return false; 
+            }
+            if (!githubConfig.token) {
+                if (showSuccessNotification && typeof showNotification === "function") showNotification('Персональный токен доступа GitHub не указан. Пожалуйста, настройте его.', 'error');
+                if (manageImagesBtnContainer) manageImagesBtnContainer.style.display = 'none';
+                return false; 
+            }
+
+            const loadingIndicator = typeof showLoadingIndicator === "function" ? showLoadingIndicator('Проверка настроек GitHub...') : null;
+            let isValid = false; 
+            try {
+                const response = await fetch(\`https://api.github.com/repos/\${githubConfig.owner}/\${githubConfig.repo}\`, {
+                    headers: {
+                        'Authorization': \`token \${githubConfig.token}\`,
+                        'Accept': 'application/vnd.github.v3+json'
+                    }
+                });
+
+                if (loadingIndicator && typeof hideLoadingIndicator === "function") hideLoadingIndicator(loadingIndicator);
+
+                if (response.ok) { 
+                    if (showSuccessNotification && typeof showNotification === "function") showNotification('Настройки GitHub успешно проверены! Готово к загрузке изображений.', 'success');
+                    if (manageImagesBtnContainer) manageImagesBtnContainer.style.display = 'inline-block'; 
+                    isValid = true;
+                } else if (response.status === 401) {
+                    if (showSuccessNotification && typeof showNotification === "function") showNotification('Проверка GitHub провалена: Неверный токен доступа. Проверьте токен.', 'error');
+                    if (manageImagesBtnContainer) manageImagesBtnContainer.style.display = 'none';
+                } else if (response.status === 403) {
+                     if (showSuccessNotification && typeof showNotification === "function") showNotification('Проверка GitHub провалена: Токен не имеет достаточных прав доступа к репозиторию.', 'error');
+                     if (manageImagesBtnContainer) manageImagesBtnContainer.style.display = 'none';
+                } else if (response.status === 404) {
+                    if (showSuccessNotification && typeof showNotification === "function") showNotification('Проверка GitHub провалена: Репозиторий не найден. Проверьте имя пользователя и название репозитория.', 'error');
+                    if (manageImagesBtnContainer) manageImagesBtnContainer.style.display = 'none';
+                } else {
+                    if (showSuccessNotification && typeof showNotification === "function") showNotification(\`Проверка GitHub провалена: Ошибка \${response.status}. \${response.statusText}\`, 'error');
+                    if (manageImagesBtnContainer) manageImagesBtnContainer.style.display = 'none';
+                }
+            } catch (error) {
+                if (loadingIndicator && typeof hideLoadingIndicator === "function") hideLoadingIndicator(loadingIndicator);
+                console.error('Ошибка валидации GitHub:', error);
+                if (showSuccessNotification && typeof showNotification === "function") showNotification('Проверка GitHub провалена: Произошла сетевая ошибка или GitHub недоступен.', 'error');
+                if (manageImagesBtnContainer) manageImagesBtnContainer.style.display = 'none';
+            }
+            return isValid; 
+        }
+
+        function openManageGitHubImagesModal() {
+            if (!currentArticleIdForManagement) {
+                if(typeof showNotification === "function") showNotification("ID статьи не определен. Скопируйте контент с изображениями на GitHub хостинг хоты бы раз.", "error");
+                return;
+            }
+
+            const articleImages = JSON.parse(localStorage.getItem(\`article_\${currentArticleIdForManagement}_images\`) || '[]');
+            const modal = document.createElement('div');
+            modal.style.cssText = \`
+                position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+                background-color: rgba(0,0,0,0.6); display: flex; align-items: center;
+                justify-content: center; z-index: 10000; padding: 20px;
+            \`;
+            const modalContent = document.createElement('div');
+            modalContent.style.cssText = \`
+                background-color: white; padding: 25px; border-radius: 10px;
+                width: 600px; max-width: 95%; max-height: 80vh; overflow-y: auto;
+                box-shadow: 0 5px 20px rgba(0,0,0,0.2);
+            \`;
+            modalContent.setAttribute('role', 'dialog');
+            modalContent.setAttribute('aria-labelledby', 'manage-images-title');
+            modalContent.setAttribute('aria-modal', 'true');
+
+            modalContent.innerHTML = \`
+                <h2 id="manage-images-title" style="margin-top: 0; color: #4facfe; margin-bottom:10px;">Управление изображениями для статьи:</h2>
+                <p style="font-size:0.9em; color:#555; margin-bottom:20px;">ID статьи: <strong>\${currentArticleIdForManagement}</strong></p>
+                <div id="githubImagesListModal" style="margin-bottom: 20px;"></div>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 20px;">
+                    <button id="github-manage-close" class="btn btn-secondary" style="background: #6c757d;">Закрыть</button>
+                    \${articleImages.length > 0 ? \`<button id="github-delete-all-article-images" class="btn" style="background: linear-gradient(135deg, #ff6b6b 0%, #ff8e8e 100%);">Удалить все (\${articleImages.length}) с GitHub</button>\` : ''}
+                </div>
+            \`;
+            modal.appendChild(modalContent);
+            document.body.appendChild(modal);
+            modal.addEventListener('click', (e) => { 
+                if (e.target === modal) document.body.removeChild(modal);
+            });
+            document.getElementById('github-manage-close').addEventListener('click', () => document.body.removeChild(modal));
+
+            if (document.getElementById('github-delete-all-article-images')) {
+                document.getElementById('github-delete-all-article-images').addEventListener('click', () => {
+                    if(typeof confirmAction === "function") confirmAction(\`Вы уверены, что хотите удалить ВСЕ (\${articleImages.length}) изображения для статьи \${currentArticleIdForManagement} с GitHub? Это действие нельзя отменить.\`, () => {
+                        deleteArticleImages(currentArticleIdForManagement).then(() => {
+                           if (modal.parentNode) document.body.removeChild(modal); 
+                           if(typeof showNotification === "function") showNotification(\`Все изображения для статьи \${currentArticleIdForManagement} удалены.\`, 'success');
+                        }).catch(err => {
+                           if(typeof showNotification === "function") showNotification(\`Ошибка при удалении всех изображений: \${err.message}\`, 'error');
+                        });
+                    });
+                });
+            }
+            renderGitHubImagesList(currentArticleIdForManagement, modalContent.querySelector('#githubImagesListModal'));
+        }
+
+        function renderGitHubImagesList(articleId, containerElement) {
+            if (!containerElement) return;
+            const articleImages = JSON.parse(localStorage.getItem(\`article_\${articleId}_images\`) || '[]');
+            containerElement.innerHTML = ''; 
+
+            if (articleImages.length === 0) {
+                containerElement.innerHTML = '<p style="color: #777; text-align:center;">Нет изображений для этой статьи на GitHub.</p>';
+                const deleteAllBtn = document.getElementById('github-delete-all-article-images');
+                if (deleteAllBtn) {
+                    deleteAllBtn.disabled = true;
+                    deleteAllBtn.style.opacity = '0.6';
+                    deleteAllBtn.textContent = 'Удалить все (0) с GitHub';
+                }
+                return;
+            }
+
+            const ul = document.createElement('ul');
+            ul.style.cssText = 'list-style: none; padding: 0;';
+            articleImages.forEach(image => {
+                const li = document.createElement('li');
+                li.style.cssText = 'display: flex; align-items: center; justify-content: space-between; padding: 10px; border-bottom: 1px solid #eee;';
+                const imgPreview = document.createElement('img');
+                imgPreview.src = image.url; 
+                imgPreview.alt = image.filename;
+                imgPreview.style.cssText = 'width: 50px; height: 50px; object-fit: cover; border-radius: 4px; margin-right: 15px;';
+                const fileNameSpan = document.createElement('span');
+                fileNameSpan.textContent = image.filename;
+                fileNameSpan.style.flexGrow = '1';
+                fileNameSpan.style.fontSize = '0.9em';
+                const deleteBtn = document.createElement('button');
+                deleteBtn.innerHTML = '🗑️';
+                deleteBtn.className = 'btn';
+                deleteBtn.setAttribute('aria-label', \`Удалить изображение \${image.filename} с GitHub\`);
+                deleteBtn.title = \`Удалить \${image.filename} с GitHub\`;
+                deleteBtn.style.cssText = 'background: linear-gradient(135deg, #ff6b6b 0%, #ff8e8e 100%); padding: 5px 10px; font-size: 14px; margin-left:10px;';
+                deleteBtn.onclick = () => {
+                    if(typeof confirmAction === "function") confirmAction(\`Вы уверены, что хотите удалить "\${image.filename}" с GitHub?\`, () => {
+                        deleteSingleImageFromGitHub(articleId, image.filename, image.sha)
+                            .then(() => {
+                                if(typeof showNotification === "function") showNotification(\`Изображение "\${image.filename}" удалено с GitHub.\`, 'success');
+                                renderGitHubImagesList(articleId, containerElement); 
+                                const deleteAllBtn = document.getElementById('github-delete-all-article-images');
+                                const updatedImages = JSON.parse(localStorage.getItem(\`article_\${articleId}_images\`) || '[]');
+                                if (deleteAllBtn) {
+                                    if (updatedImages.length > 0) {
+                                     deleteAllBtn.textContent = \`Удалить все (\${updatedImages.length}) с GitHub\`;
+                                     deleteAllBtn.disabled = false;
+                                     deleteAllBtn.style.opacity = '1';
+                                    } else {
+                                     deleteAllBtn.textContent = 'Удалить все (0) с GitHub';
+                                     deleteAllBtn.disabled = true;
+                                     deleteAllBtn.style.opacity = '0.6';
+                                    }
+                                }
+                            })
+                            .catch(err => { if(typeof showNotification === "function") showNotification(\`Ошибка удаления "\${image.filename}": \${err.message}\`, 'error')});
+                    });
+                };
+                const imageInfoDiv = document.createElement('div');
+                imageInfoDiv.style.display = 'flex';
+                imageInfoDiv.style.alignItems = 'center';
+                imageInfoDiv.appendChild(imgPreview);
+                imageInfoDiv.appendChild(fileNameSpan);
+                li.appendChild(imageInfoDiv);
+                li.appendChild(deleteBtn);
+                ul.appendChild(li);
+            });
+            containerElement.appendChild(ul);
+        }
+        
+        async function deleteSingleImageFromGitHub(articleId, filename, sha) {
+            if (!githubConfig.owner || !githubConfig.repo || !githubConfig.token) {
+                if(typeof showNotification === "function") showNotification('Настройки GitHub не сконфигурированы.', 'error');
+                throw new Error('GitHub config missing');
+            }
+            const imagePath = \`\${githubConfig.imagesPath}\${articleId}/\${filename}\`;
+            const response = await fetch(\`https://api.github.com/repos/\${githubConfig.owner}/\${githubConfig.repo}/contents/\${imagePath}\`, {
+                method: 'DELETE',
+                headers: {
+                    'Authorization': \`token \${githubConfig.token}\`,
+                    'Accept': 'application/vnd.github.v3+json',
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    message: \`Delete image \${filename} for article \${articleId} via PublikaTor\`,
+                    sha: sha,
+                    branch: githubConfig.branch
+                })
+            });
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({ message: response.statusText }));
+                console.error(\`Ошибка удаления изображения \${filename} с GitHub:\`, errorData);
+                throw new Error(\`GitHub API: \${errorData.message || response.status}\`);
+            }
+            let articleImages = JSON.parse(localStorage.getItem(\`article_\${articleId}_images\`) || '[]');
+            articleImages = articleImages.filter(img => img.filename !== filename);
+            localStorage.setItem(\`article_\${articleId}_images\`, JSON.stringify(articleImages));
+            return await response.json();
+        }
+
+        async function uploadImageToGitHub(dataUrl, filename, articleId) {
+            currentArticleIdForManagement = articleId; 
+            if (!githubConfig.owner || !githubConfig.repo || !githubConfig.token) {
+                if(typeof showNotification === "function") showNotification('Необходимо настроить интеграцию с GitHub. Нажмите ⚙️ для настройки.', 'error');
+                throw new Error('Необходимо настроить интеграцию с GitHub');
+            }
+            try {
+                const base64Data = dataUrl.split(',')[1];
+                const imagePath = \`\${githubConfig.imagesPath}\${articleId}/\${filename}\`;
+                let fileSha = null;
+                try {
+                    const fileResponse = await fetch(\`https://api.github.com/repos/\${githubConfig.owner}/\${githubConfig.repo}/contents/\${imagePath}?ref=\${githubConfig.branch}\`, {
+                        headers: { 'Authorization': \`token \${githubConfig.token}\`, 'Accept': 'application/vnd.github.v3+json' }
+                    });
+                    if (fileResponse.ok) {
+                        const fileData = await fileResponse.json();
+                        fileSha = fileData.sha;
+                    }
+                } catch (error) { console.log('Файл не существует, будет создан новый'); }
+
+                const response = await fetch(\`https://api.github.com/repos/\${githubConfig.owner}/\${githubConfig.repo}/contents/\${imagePath}\`, {
+                    method: 'PUT',
+                    headers: {
+                        'Authorization': \`token \${githubConfig.token}\`,
+                        'Accept': 'application/vnd.github.v3+json',
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        message: \`Upload image \${filename} for article \${articleId}\`,
+                        content: base64Data, branch: githubConfig.branch, sha: fileSha
+                    })
+                });
+                if (!response.ok) throw new Error(\`GitHub API error: \${response.status} \${response.statusText}\`);
+                const data = await response.json();
+                saveImageInfo(articleId, filename, data.content.sha, data.content.html_url);
+                return \`https://raw.githubusercontent.com/\${githubConfig.owner}/\${githubConfig.repo}/\${githubConfig.branch}/\${imagePath}\`;
+            } catch (error) {
+                console.error('Ошибка загрузки изображения на GitHub:', error);
+                if(typeof showNotification === "function") showNotification('Ошибка загрузки изображения на GitHub: ' + error.message, 'error');
+                throw error;
+            }
+        }
+
+        function saveImageInfo(articleId, filename, sha, url) {
+            let articleImages = JSON.parse(localStorage.getItem(\`article_\${articleId}_images\`) || '[]');
+            articleImages.push({ filename, sha, url, uploadedAt: new Date().toISOString() });
+            localStorage.setItem(\`article_\${articleId}_images\`, JSON.stringify(articleImages));
+        }
+
+        async function deleteArticleImages(articleId) { 
+            if (!githubConfig.owner || !githubConfig.repo || !githubConfig.token) {
+                if (typeof setupGitHub === "function") setupGitHub(); // Should ideally not happen if UI controls this
+                else if(typeof showNotification === "function") showNotification('Настройки GitHub не сконфигурированы.', 'error');
+                throw new Error('Необходимо настроить интеграцию с GitHub');
+            }
+            const articleImages = JSON.parse(localStorage.getItem(\`article_\${articleId}_images\`) || '[]');
+            if (articleImages.length === 0) {
+                if(typeof showNotification === "function") showNotification('Нет изображений для удаления', 'info');
+                return;
+            }
+            const loadingIndicator = typeof showLoadingIndicator === "function" ? showLoadingIndicator('Удаление изображений...') : null;
+            try {
+                for (const image of articleImages) {
+                    const imagePath = \`\${githubConfig.imagesPath}\${articleId}/\${image.filename}\`;
+                    const response = await fetch(\`https://api.github.com/repos/\${githubConfig.owner}/\${githubConfig.repo}/contents/\${imagePath}\`, {
+                        method: 'DELETE',
+                        headers: {
+                            'Authorization': \`token \${githubConfig.token}\`,
+                            'Accept': 'application/vnd.github.v3+json',
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            message: \`Delete image \${image.filename} for article \${articleId}\`,
+                            sha: image.sha, branch: githubConfig.branch
+                        })
+                    });
+                    if (!response.ok) console.error(\`Ошибка удаления изображения \${image.filename}:\`, await response.text());
+                }
+                localStorage.removeItem(\`article_\${articleId}_images\`);
+                if (loadingIndicator && typeof hideLoadingIndicator === "function") hideLoadingIndicator(loadingIndicator);
+                if(typeof showNotification === "function") showNotification(\`Удалено \${articleImages.length} изображений для статьи \${articleId}\`, 'success');
+            } catch (error) {
+                if (loadingIndicator && typeof hideLoadingIndicator === "function") hideLoadingIndicator(loadingIndicator);
+                console.error('Ошибка удаления изображений:', error);
+                if(typeof showNotification === "function") showNotification('Ошибка удаления изображений: ' + error.message, 'error');
+                throw error;
+            }
+        }
+
+        function generateArticleId() {
+            let title = '';
+            const previewContentElement = document.getElementById('previewContent');
+            if (previewContentElement) {
+                 const titleElement = previewContentElement.querySelector('h1, h2, h3, p');
+                 if (titleElement) title = titleElement.textContent || '';
+            }
+            const titleSlug = title.toLowerCase().replace(/[^\\w\\s-]/g, '').replace(/\\s+/g, '-').substring(0, 30);
+            const timestamp = Date.now().toString(36);
+            return \`\${titleSlug}-\${timestamp}\`;
+        }
+
+        function showNotification(message, type = 'info', duration = 5000, buttons = null) {
+            const container = document.getElementById('notification-container');
+            if (!container) { // Fallback if container not in DOM (e.g. very early tests)
+                console.log(\`Notification (\${type}): \${message}\`);
+                return;
+            }
+            const notification = document.createElement('div');
+            notification.className = \`custom-notification \${type}\`;
+            notification.textContent = message;
+            if (type === 'error' || type === 'success' || type === 'info') {
+                 notification.setAttribute('role', 'alert');
+            }
+            if (buttons) {
+                const buttonsDiv = document.createElement('div');
+                buttonsDiv.className = 'notification-buttons';
+                buttons.forEach(btnConfig => {
+                    const button = document.createElement('button');
+                    button.textContent = btnConfig.text;
+                    button.className = btnConfig.className;
+                    button.onclick = () => {
+                        btnConfig.action();
+                        if (notification.parentNode === container) { 
+                           container.removeChild(notification);
+                        }
+                    };
+                    buttonsDiv.appendChild(button);
+                });
+                notification.appendChild(buttonsDiv);
+            }
+            container.insertBefore(notification, container.firstChild); 
+            if (duration > 0) { 
+                setTimeout(() => {
+                    if (notification.parentNode === container) { 
+                         container.removeChild(notification);
+                    }
+                }, duration);
+            }
+            return notification; 
+        }
+
+        function confirmAction(message, onConfirm, onCancel = () => {}) {
+            showNotification(message, 'confirm', 0, [ 
+                { text: 'Да', className: 'confirm-yes', action: onConfirm },
+                { text: 'Отмена', className: 'confirm-cancel', action: onCancel }
+            ]);
+        }
+
+        function showLoadingIndicator(message) {
+            const existingIndicator = document.getElementById('loading-indicator-global');
+            if (existingIndicator) {
+                existingIndicator.querySelector('p').textContent = message;
+                return existingIndicator;
+            }
+            const loadingIndicator = document.createElement('div');
+            loadingIndicator.id = 'loading-indicator-global';
+            loadingIndicator.style.cssText = \`
+                position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+                background-color: rgba(0, 0, 0, 0.5); display: flex; align-items: center;
+                justify-content: center; z-index: 99999;
+            \`;
+            loadingIndicator.innerHTML = \`
+                <div style="background: white; padding: 20px; border-radius: 10px; text-align: center; box-shadow: 0 0 15px rgba(0,0,0,0.2);">
+                    <div class="spinner" style="border: 3px solid #f3f3f3; border-top: 3px solid #667eea; border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; margin: 0 auto 10px;"></div>
+                    <p style="color: #333; font-size: 1em;">\${message}</p>
+                </div>
+            \`;
+            document.body.appendChild(loadingIndicator);
+            return loadingIndicator;
+        }
+
+        function hideLoadingIndicator(loadingIndicator) {
+            if (loadingIndicator && loadingIndicator.parentNode && loadingIndicator.id === 'loading-indicator-global') {
+                loadingIndicator.parentNode.removeChild(loadingIndicator);
+            }
+        }
+        
+        async function copyForZenWithGitHub() {
+            const textEditor = document.getElementById('textEditor');
+            if (!processedContent && textEditor && textEditor.value.trim() === '') { // Avoid preview if editor empty
+                 showNotification('Сначала введите текст или загрузите файл!', 'error'); return;
+            }
+            if (!processedContent) {
+                if (typeof generatePreview === "function") generatePreview();
+                if (!processedContent) { 
+                    showNotification('Сначала создайте предварительный просмотр!', 'error');
+                    return;
+                }
+            }
+            const articleId = typeof generateArticleId === "function" ? generateArticleId() : 'unknown-article';
+            currentArticleIdForManagement = articleId;
+
+            const loadingIndicator = typeof showLoadingIndicator === "function" ? showLoadingIndicator('Подготовка изображений для Дзена...') : null;
+            const tempDiv = document.createElement('div');
+            tempDiv.innerHTML = processedContent; 
+            const uploadPromises = [];
+            const figureElements = tempDiv.querySelectorAll('figure');
+
+            for (const figure of figureElements) {
+                const imgElement = figure.querySelector('img');
+                if (!imgElement) continue; 
+                const originalSrc = imgElement.getAttribute('src');
+                const isLocalImage = originalSrc.startsWith('data:image');
+                if (isLocalImage) {
+                    let filename = null;
+                    for (const [key, value] of uploadedImages.entries()) {
+                        if (value === originalSrc) { filename = key; break; }
+                    }
+                    if (filename) {
+                        const uploadPromise = uploadImageToGitHub(originalSrc, filename, articleId)
+                            .then(publicUrl => {
+                                imgElement.src = publicUrl;
+                                imgElement.setAttribute('width', '100%');
+                                imgElement.setAttribute('height', 'auto');
+                                imgElement.setAttribute('data-original-src', filename);
+                                imgElement.setAttribute('data-article-id', articleId);
+                                imgElement.removeAttribute('style');
+                                imgElement.removeAttribute('onload');
+                                imgElement.removeAttribute('onerror');
+                            })
+                            .catch(error => console.error('Ошибка загрузки изображения (останется dataUrl):', error));
+                        uploadPromises.push(uploadPromise);
+                    }
+                } else if (originalSrc.startsWith('http')) {
+                    imgElement.setAttribute('width', '100%');
+                    imgElement.setAttribute('height', 'auto');
+                    imgElement.setAttribute('data-original-src', originalSrc);
+                    imgElement.setAttribute('data-article-id', articleId);
+                    imgElement.removeAttribute('style');
+                    imgElement.removeAttribute('onload');
+                    imgElement.removeAttribute('onerror');
+                    const errorDiv = imgElement.nextElementSibling;
+                    if (errorDiv && errorDiv.tagName === 'DIV' && errorDiv.style.display === 'none') errorDiv.remove();
+                }
+            }
+
+            Promise.all(uploadPromises)
+                .then(() => {
+                    let zenHtml = tempDiv.innerHTML;
+                    zenHtml = zenHtml.replace(/style="[^"]*"/g, match => (match.includes('text-align') || match.includes('font-style') || match.includes('color') || match.includes('font-size')) ? match : '');
+                    zenHtml = zenHtml.replace(/onload="[^"]*"/g, '').replace(/onerror="[^"]*"/g, '');
+                    zenHtml = zenHtml.replace(/<div style="display: none; background:[^>]+>.*?<\/div>/g, '');
+                    zenHtml = zenHtml.replace(/\\n\\s*\\n/g, '\\n').trim();
+                    if (typeof copyHtmlToClipboard === "function") copyHtmlToClipboard(zenHtml);
+                    if (loadingIndicator && typeof hideLoadingIndicator === "function") hideLoadingIndicator(loadingIndicator);
+                    if (typeof showNotification === "function") showNotification(\`Контент скопирован для Дзена! ID статьи: \${articleId}\`, 'success');
+                    if (typeof addDeleteImagesButton === "function") addDeleteImagesButton(articleId);
+                })
+                .catch(error => {
+                    console.error('Ошибка при обработке изображений:', error);
+                    if (loadingIndicator && typeof hideLoadingIndicator === "function") hideLoadingIndicator(loadingIndicator);
+                    if (typeof showNotification === "function") showNotification('Произошла ошибка при подготовке изображений. Пожалуйста, попробуйте еще раз.', 'error');
+                });
+        }
+
+        function addDeleteImagesButton(articleId) {
+            const existingButton = document.getElementById(\`delete-images-\${articleId}\`);
+            if (existingButton) return;
+
+            const deleteButton = document.createElement('button');
+            deleteButton.id = \`delete-images-\${articleId}\`;
+            deleteButton.className = 'btn';
+            deleteButton.style.background = 'linear-gradient(135deg, #ff6b6b 0%, #ff8e8e 100%)';
+            deleteButton.style.marginLeft = '10px';
+            deleteButton.innerHTML = '🗑️ Удалить изображения статьи';
+            deleteButton.title = \`Удалить все изображения для статьи \${articleId}\`;
+            deleteButton.setAttribute('aria-label', \`Удалить все изображения для статьи \${articleId}\`);
+
+            deleteButton.addEventListener('click', () => {
+                if(typeof confirmAction === "function") confirmAction(\`Вы уверены, что хотите удалить все изображения для статьи \${articleId}? Это действие нельзя отменить.\`, () => {
+                    deleteArticleImages(articleId)
+                        .then(() => {
+                            if (deleteButton.parentNode) deleteButton.parentNode.removeChild(deleteButton);
+                            const modal = document.querySelector('div[style*="z-index: 10000"]'); 
+                            if (modal && currentArticleIdForManagement === articleId) {
+                                const listContainer = modal.querySelector('#githubImagesListModal'); // Corrected ID
+                                if (listContainer) renderGitHubImagesList(articleId, listContainer);
+                            }
+                        });
+                });
+            });
+            const zenCopyBtn = document.getElementById('zenCopyBtn');
+            if (zenCopyBtn && zenCopyBtn.parentNode) zenCopyBtn.parentNode.appendChild(deleteButton);
+            else {
+                const zenCopyBtn2 = document.getElementById('zenCopyBtn2');
+                if (zenCopyBtn2 && zenCopyBtn2.parentNode) zenCopyBtn2.parentNode.appendChild(deleteButton);
+            }
+        }
+
+        async function uploadImageToExternalHost(dataUrl, filename) {
+            try {
+                const articleId = typeof generateArticleId === "function" ? generateArticleId() : 'unknown-article-ext';
+                return await uploadImageToGitHub(dataUrl, filename, articleId);
+            } catch (error) {
+                console.error('Ошибка загрузки изображения (external host):', error);
+                return \`https://cdn.publikator.demo/img_\${Date.now()}_\${Math.random().toString(36).substr(2, 9)}/\${filename}\`;
+            }
+        }
+
+        function dataURLtoBlob(dataURL) {
+            return new Promise((resolve) => {
+                const arr = dataURL.split(',');
+                const mime = arr[0].match(/:(.*?);/)[1];
+                const bstr = atob(arr[1]);
+                let n = bstr.length;
+                const u8arr = new Uint8Array(n);
+                while (n--) u8arr[n] = bstr.charCodeAt(n);
+                resolve(new Blob([u8arr], { type: mime }));
+            });
+        }
+
+        function copyHtmlToClipboard(html) {
+            const tempDiv = document.createElement('div');
+            tempDiv.style.position = 'absolute';
+            tempDiv.style.left = '-9999px';
+            tempDiv.innerHTML = html;
+            document.body.appendChild(tempDiv);
+            try {
+                if (navigator.clipboard && navigator.clipboard.write) {
+                    const clipboardItem = new ClipboardItem({
+                        'text/html': new Blob([html], { type: 'text/html' }),
+                        'text/plain': new Blob([tempDiv.textContent || tempDiv.innerText || ''], { type: 'text/plain' })
+                    });
+                    navigator.clipboard.write([clipboardItem])
+                        .then(() => { if (typeof showCopySuccess === "function") showCopySuccess(); }) // showCopySuccess might not be defined
+                        .catch(err => {
+                            console.error('Ошибка Clipboard API:', err);
+                            if (typeof fallbackCopyMethod === "function") fallbackCopyMethod(tempDiv);
+                        });
+                } else {
+                    if (typeof fallbackCopyMethod === "function") fallbackCopyMethod(tempDiv);
+                }
+            } catch (err) {
+                console.error('Ошибка копирования:', err);
+                if (typeof fallbackCopyMethod === "function") fallbackCopyMethod(tempDiv);
+            } finally {
+                if (tempDiv.parentNode) tempDiv.parentNode.removeChild(tempDiv);
+            }
+        }
+
+        function fallbackCopyMethod(element) {
+            const range = document.createRange();
+            range.selectNodeContents(element);
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            let successful = false;
+            try {
+                successful = document.execCommand('copy');
+                if (!successful) {
+                   if(typeof showNotification === "function") showNotification('Не удалось скопировать контент через execCommand. Попробуйте вручную (Ctrl+C).', 'error');
+                } else {
+                   if(typeof showNotification === "function") showNotification('Контент скопирован (fallback метод).', 'success');
+                }
+            } catch (err) {
+                console.error('Ошибка fallback копирования:', err);
+                if(typeof showNotification === "function") showNotification('Ошибка при fallback копировании. Пожалуйста, скопируйте вручную (Ctrl+C).', 'error');
+            }
+            if (window.getSelection) window.getSelection().removeAllRanges();
+        }
+
+        function showCopySuccess() { // This function seems tied to a specific element #copySuccess
+            const successDiv = document.getElementById('copySuccess');
+            if (successDiv) {
+                successDiv.style.display = 'block';
+                const btn = document.getElementById('zenCopyBtn') || document.getElementById('zenCopyBtn2');
+                if (btn) {
+                    const originalText = btn.innerHTML;
+                    btn.innerHTML = '✅ Скопировано для Дзена!';
+                    btn.style.background = '#28a745';
+                    setTimeout(() => {
+                        btn.innerHTML = originalText;
+                        btn.style.background = '';
+                        successDiv.style.display = 'none';
+                    }, 3000);
+                }
+            } else { // Fallback to general notification if #copySuccess is not found
+                if(typeof showNotification === "function") showNotification('Контент скопирован для Дзена!', 'success');
+            }
+        }
+
+        function publishContent() {
+            const textEditor = document.getElementById('textEditor');
+            if (!processedContent && textEditor && textEditor.value.trim() === '') {
+                if(typeof showNotification === "function") showNotification('Сначала введите текст или загрузите файл!', 'error'); return;
+            }
+            if (!processedContent) {
+                if (typeof generatePreview === "function") generatePreview();
+                if (!processedContent) {
+                    if(typeof showNotification === "function") showNotification('Сначала создайте предварительный просмотр!', 'error');
+                    return;
+                }
+            }
+            const loading = document.getElementById('loading');
+            const publishResult = document.getElementById('publishResult');
+            const publishedContentDiv = document.getElementById('publishedContent');
+            const finalContentDiv = document.getElementById('finalContent');
+
+            if(loading) loading.style.display = 'block';
+            if(publishResult) publishResult.innerHTML = '';
+
+            setTimeout(() => {
+                if(finalContentDiv) finalContentDiv.innerHTML = processedContent;
+                if(publishedContentDiv) publishedContentDiv.style.display = 'block';
+                if(typeof createFullHtmlPage === "function") window.publishedHtml = createFullHtmlPage(processedContent);
+                if(loading) loading.style.display = 'none';
+                if(publishResult) publishResult.innerHTML = \`
+                    <div class="publish-url">
+                        <strong>✅ Контент успешно опубликован!</strong><br><br>
+                        <p style="color: rgba(255,255,255,0.9);">Ваша страница отображается ниже и готова для использования</p>
+                    </div>
+                \`;
+                if(publishedContentDiv) setTimeout(() => publishedContentDiv.scrollIntoView({ behavior: 'smooth' }), 500);
+            }, 1500);
+        }
+
+        function downloadCurrentPage() {
+            const htmlContent = window.publishedHtml;
+            if (htmlContent) {
+                const pageId = 'page_' + Date.now();
+                const blob = new Blob([htmlContent], { type: 'text/html;charset=utf-8' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = \`published_page_\${pageId}.html\`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            } else {
+                if(typeof showNotification === "function") showNotification('Сначала опубликуйте контент!', 'error');
+            }
+        }
+
+        function createFullHtmlPage(content) {
+            return \`<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Опубликованная страница</title>
+    <style>
+        body { font-family: 'Times New Roman', Times, serif; margin: 20px auto; max-width: 800px; padding: 0 20px; line-height: 1.6; color: #333; }
+        figure { margin: 20px 0; text-align: center; }
+        img { max-width: 100%; height: auto; display: block; margin: 0 auto; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+        p { margin: 1em 0; }
+        figcaption { font-style: italic; color: #555; text-align: center; margin-top: 8px; font-size: 0.9em; }
+        div[style*="background: #ffebee"] { border: 1px solid #c62828; padding: 10px; margin: 10px 0; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    \${content}
+</body>
+</html>\`;
+        }
+
+        function clearAll() {
+            if(typeof confirmAction === "function") confirmAction("Вы уверены, что хотите все очистить? Это действие нельзя отменить.", () => {
+                const textEditor = document.getElementById('textEditor');
+                const previewContent = document.getElementById('previewContent');
+                const imagesList = document.getElementById('imagesList');
+                const publishResult = document.getElementById('publishResult');
+                const publishedContent = document.getElementById('publishedContent');
+
+                if(textEditor) textEditor.value = '';
+                if(previewContent) previewContent.innerHTML = '<p style="text-align: center; color: #999; font-style: italic;">Загрузите текст и изображения, затем нажмите "Предварительный просмотр"</p>';
+                if(imagesList) imagesList.innerHTML = '';
+                if(publishResult) publishResult.innerHTML = '';
+                if(publishedContent) publishedContent.style.display = 'none';
+
+                uploadedImages.clear();
+                imageUrlMap.clear();
+                processedContent = '';
+                window.publishedHtml = '';
+                const deleteButtons = document.querySelectorAll('button[id^="delete-images-"]');
+                deleteButtons.forEach(btn => btn.remove());
+                if(typeof showNotification === "function") showNotification('Все поля очищены.', 'info', 2000);
+            });
+        }
+
+        function copyToClipboard() {
+             if (window.publishedHtml) {
+                navigator.clipboard.writeText(window.publishedHtml).then(() => {
+                    if(typeof showNotification === "function") showNotification('HTML код полной страницы скопирован в буфер обмена!', 'success');
+                }).catch(err => {
+                    if(typeof showNotification === "function") showNotification('Ошибка копирования HTML: ' + err, 'error');
+                    console.error('Ошибка копирования HTML:', err);
+                });
+            } else {
+                if(typeof showNotification === "function") showNotification('Сначала опубликуйте контент, чтобы получить HTML для копирования.', 'error');
+            }
+        }
+
+        if (typeof document !== 'undefined') { // Guard for non-browser environments if script were ever run there
+            document.addEventListener('DOMContentLoaded', function() {
+                const savedConfig = JSON.parse(localStorage.getItem('githubConfig') || '{}');
+                if (savedConfig.owner) githubConfig.owner = savedConfig.owner;
+                if (savedConfig.repo) githubConfig.repo = savedConfig.repo;
+                if (savedConfig.branch) githubConfig.branch = savedConfig.branch;
+                if (savedConfig.imagesPath) githubConfig.imagesPath = savedConfig.imagesPath;
+                
+                const fileUploadSection = document.querySelector('.file-upload');
+                if (fileUploadSection && typeof setupGitHub === "function") { // Check if setupGitHub is defined
+                    const setupButton = document.createElement('div');
+                    setupButton.className = 'file-input-wrapper';
+                    setupButton.style.background = 'linear-gradient(135deg, #333 0%, #666 100%)';
+                    setupButton.innerHTML = '⚙️ Настройка GitHub';
+                    setupButton.style.cursor = 'pointer';
+                    setupButton.addEventListener('click', setupGitHub);
+                    fileUploadSection.appendChild(setupButton);
+                }
+            });
+        }
+    </script>
+    <!-- End of Copied JavaScript -->
+
+    <script src="tests.js"></script>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', async () => {
+            const resultsList = document.getElementById('resultsList');
+            const totalTestsEl = document.getElementById('totalTests');
+            const testsPassedEl = document.getElementById('testsPassed');
+            const testsFailedEl = document.getElementById('testsFailed');
+
+            // Ensure mocks are set up before running tests, and index.html's JS has loaded.
+            // The global setupMocks() from tests.js is called by runAllTests().
+            
+            const results = await runAllTests(); // from tests.js
+
+            totalTestsEl.textContent = TestSuite.totalRun; // Use totals from TestSuite
+            testsPassedEl.textContent = TestSuite.totalPassed;
+            testsFailedEl.textContent = TestSuite.totalRun - TestSuite.totalPassed;
+
+            results.forEach(result => {
+                const li = document.createElement('li');
+                li.className = result.status === "PASS" ? "pass" : "fail";
+                li.innerHTML = \`<strong>\${result.name}:</strong> \${result.status}\`;
+                if (result.error) {
+                    const pre = document.createElement('pre');
+                    pre.textContent = result.error;
+                    li.appendChild(pre);
+                }
+                resultsList.appendChild(li);
+            });
+        });
+    </script>
+</body>
+</html>
